@@ -99,14 +99,39 @@ class BrowserFingerprint:
 
 
 def _get_executable_major_version(executable_path: str) -> Optional[int]:
-    """读取 Chrome/ChromeDriver 可执行文件的主版本号。"""
+    """读取 Chrome/ChromeDriver 可执行文件的主版本号。
+
+    - Windows 上 chrome.exe --version 不会打印版本（会启动浏览器），
+      所以优先用 PowerShell 读 PE 文件资源里的 ProductVersion；
+      chromedriver 在 Windows 上 --version 是正常打印的，保留 fallback。
+    - 其他平台用 --version。
+    """
+    import sys
+    exe_str = str(executable_path)
+
+    # Windows: 优先用 PowerShell 读 PE 资源里的版本号（不会启动 Chrome）
+    if sys.platform.startswith("win"):
+        try:
+            ps_cmd = (
+                f"(Get-Item -LiteralPath '{exe_str}').VersionInfo.ProductVersion"
+            )
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+                capture_output=True, text=True, timeout=8, check=False,
+            )
+            output = (result.stdout or "").strip()
+            match = re.search(r"\b(\d+)\.", output)
+            if match:
+                return int(match.group(1))
+            logger.debug(f"PowerShell 读取版本输出无法解析: {output!r}")
+        except Exception as e:
+            logger.debug(f"PowerShell 读取版本失败: {exe_str}, {e}")
+
+    # Fallback: --version（chromedriver / Linux 平台都能打）
     try:
         result = subprocess.run(
-            [str(executable_path), "--version"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
+            [exe_str, "--version"],
+            capture_output=True, text=True, timeout=5, check=False,
         )
     except Exception as e:
         logger.debug(f"读取版本失败: {executable_path}, {e}")
@@ -148,7 +173,13 @@ def _get_cached_chromedriver_path(chrome_version: Optional[int]) -> Optional[str
 
 
 def _get_matching_cached_chromedriver(chrome_version: Optional[int]) -> Optional[str]:
-    """获取与当前 Chrome 主版本匹配的缓存 driver。"""
+    """获取与当前 Chrome 主版本匹配的缓存 driver。
+
+    如果缓存里的 driver 版本与 Chrome 不匹配，会主动**删除缓存文件**，
+    迫使 undetected-chromedriver 在下次启动时按 version_main 重新下载。
+    这是因为 uc 3.5 系列的缓存是单一文件（undetected_chromedriver.exe），
+    存在缓存就直接复用，不会因为传 version_main 而自动比对/换版本。
+    """
     if not chrome_version:
         return None
 
@@ -160,7 +191,19 @@ def _get_matching_cached_chromedriver(chrome_version: Optional[int]) -> Optional
     if cached_major == chrome_version:
         return cached_path
 
-    logger.debug(f"缓存chromedriver版本({cached_major})与Chrome版本({chrome_version})不匹配")
+    # 不匹配 → 主动删除缓存文件，触发 uc 重新下载
+    logger.warning(
+        f"⚠️  缓存chromedriver版本({cached_major})与Chrome版本({chrome_version})不匹配，"
+        f"将删除缓存以触发重新下载: {cached_path}"
+    )
+    try:
+        Path(cached_path).unlink()
+        logger.info(f"🗑️  已删除过期chromedriver缓存: {cached_path}")
+    except Exception as e:
+        logger.error(
+            f"❌ 删除过期chromedriver缓存失败: {e}\n"
+            f"   请手动删除该文件后重启程序: {cached_path}"
+        )
     return None
 
 

@@ -231,8 +231,119 @@ class OutlookRegistration:
         print(f"❌ 所有点击尝试均失败，共尝试 {len(locators)} 种定位器")
         return False
 
+    def _dump_dropdown_failure(self, button_elem, field_name: str, value):
+        """下拉选择失败时的诊断 dump：截图 + DOM 关键元素 outerHTML + 当前 URL。
+
+        输出位置：
+            - 截图：data/debug_screenshots/dropdown_fail_{field_name}_{timestamp}.png
+            - DOM/属性信息：直接 print 到日志面板
+
+        参数:
+            button_elem: 触发下拉的按钮 WebElement（用于读 aria-expanded / outerHTML）
+            field_name: 字段名（"日期"/"月份"/...），用于截图命名和日志标识
+            value: 期望选中的值（"28"/"July"/...）
+        """
+        from pathlib import Path
+        from datetime import datetime
+
+        try:
+            print("=" * 70)
+            print(f"🔧 [DOM DUMP] 下拉选择失败：{field_name}=「{value}」，输出诊断信息")
+            print("=" * 70)
+
+            # ---- 1. 截图 ----
+            try:
+                debug_dir = Path("data/debug_screenshots")
+                debug_dir.mkdir(parents=True, exist_ok=True)
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                # 字段名可能含中文，用 ascii 安全名
+                safe_field = "".join(c if c.isalnum() else "_" for c in field_name)
+                screenshot_path = debug_dir / f"dropdown_fail_{safe_field}_{ts}.png"
+                self.driver.save_screenshot(str(screenshot_path))
+                print(f"📸 截图已保存: {screenshot_path.resolve()}")
+            except Exception as e:
+                print(f"⚠️ 截图失败: {e}")
+
+            # ---- 2. 当前 URL ----
+            try:
+                print(f"🌐 当前URL: {self.driver.current_url}")
+            except Exception as e:
+                print(f"⚠️ 读 URL 失败: {e}")
+
+            # ---- 3. 触发按钮的状态 ----
+            if button_elem is not None:
+                try:
+                    aria_expanded = button_elem.get_attribute("aria-expanded")
+                    aria_haspopup = button_elem.get_attribute("aria-haspopup")
+                    btn_html = self.driver.execute_script(
+                        "return arguments[0].outerHTML;", button_elem
+                    )
+                    snippet = (btn_html or "")[:400]
+                    print(f"🔘 触发按钮: aria-expanded={aria_expanded!r}, aria-haspopup={aria_haspopup!r}")
+                    print(f"   outerHTML[:400]={snippet}")
+                except Exception as e:
+                    print(f"⚠️ 读按钮属性失败: {e}")
+
+            # ---- 4. 所有 [role=option] 元素的 text ----
+            try:
+                options = self.driver.find_elements(By.XPATH, "//*[@role='option']")
+                print(f"🔎 [role=option] 元素共 {len(options)} 个")
+                for i, opt in enumerate(options[:40]):
+                    try:
+                        text = (opt.text or "").strip()
+                        opt_html = self.driver.execute_script(
+                            "return arguments[0].outerHTML;", opt
+                        )
+                        print(f"   [{i:02d}] text={text!r}  html[:160]={(opt_html or '')[:160]}")
+                    except Exception:
+                        pass
+                if len(options) > 40:
+                    print(f"   ... 省略 {len(options) - 40} 个")
+            except Exception as e:
+                print(f"⚠️ 抓 [role=option] 失败: {e}")
+
+            # ---- 5. 原生 <select> 与 <option> ----
+            try:
+                selects = self.driver.find_elements(By.TAG_NAME, "select")
+                print(f"📜 原生 <select> 元素共 {len(selects)} 个")
+                for i, sel in enumerate(selects):
+                    try:
+                        sel_name = sel.get_attribute("name") or sel.get_attribute("id") or "?"
+                        opts = sel.find_elements(By.TAG_NAME, "option")
+                        sample = [(o.get_attribute("value"), (o.text or "").strip()) for o in opts[:35]]
+                        print(f"   <select #{i} name/id={sel_name}> 共 {len(opts)} 个 <option>，前35个: {sample}")
+                    except Exception:
+                        pass
+            except Exception as e:
+                print(f"⚠️ 抓 <select> 失败: {e}")
+
+            # ---- 6. [role=listbox] 容器 ----
+            try:
+                lboxes = self.driver.find_elements(By.XPATH, "//*[@role='listbox']")
+                print(f"📦 [role=listbox] 元素共 {len(lboxes)} 个")
+                for i, lb in enumerate(lboxes[:5]):
+                    try:
+                        lb_html = self.driver.execute_script(
+                            "return arguments[0].outerHTML;", lb
+                        )
+                        print(f"   [{i}] outerHTML[:600]={(lb_html or '')[:600]}")
+                    except Exception:
+                        pass
+            except Exception as e:
+                print(f"⚠️ 抓 [role=listbox] 失败: {e}")
+
+            # ---- 7. 提示用户怎么办 ----
+            print("=" * 70)
+            print(f"💡 把以上日志（特别是 [role=option] 的 text 和 <select> 列表）+ 截图发给开发者")
+            print(f"   即可精准修复 {field_name} 下拉的 selector。")
+            print("=" * 70)
+
+        except Exception as outer_e:
+            print(f"⚠️ DOM dump 自身出错: {outer_e}")
+
     def smart_select_dropdown(self, button_locators, value, field_name="选项"):
         """智能选择下拉菜单（支持多种选择方式和多语言）"""
+        btn = None
         try:
             # 1. 找到并点击下拉按钮
             btn = self.smart_find(button_locators)
@@ -302,6 +413,8 @@ class OutlookRegistration:
                     pass
 
             if not selected:
+                # 三种 fallback 都失败 → dump 当前 DOM/截图，方便诊断
+                self._dump_dropdown_failure(btn, field_name, value)
                 raise Exception(f"❌ 无法选择{field_name}: {value}")
 
             time.sleep(0.5)

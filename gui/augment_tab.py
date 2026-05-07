@@ -8,9 +8,9 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QTableWidget, QTableWidgetItem,
     QTextEdit, QMessageBox, QHeaderView, QGroupBox, QSplitter,
     QDialog, QPlainTextEdit, QProgressDialog, QRadioButton,
-    QCheckBox, QLineEdit
+    QCheckBox, QLineEdit, QApplication
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QThread
+from PyQt6.QtCore import Qt, pyqtSignal, QThread, QTimer
 from PyQt6.QtGui import QColor, QIcon
 
 from database.augment_db_manager import AugmentDBManager
@@ -216,6 +216,15 @@ class AugmentTab(QWidget):
         self.log_console.setMaximumHeight(150)
         console_layout.addWidget(self.log_console)
 
+        # 工具栏：复制全部日志（在控制台正下方靠右放）
+        toolbar = QHBoxLayout()
+        toolbar.addStretch(1)
+        self.copy_logs_btn = QPushButton("📋 复制全部日志")
+        self.copy_logs_btn.setToolTip("把日志面板里全部内容复制到剪贴板（Ctrl+C 也可复制选中内容）")
+        self.copy_logs_btn.clicked.connect(self.copy_logs)
+        toolbar.addWidget(self.copy_logs_btn)
+        console_layout.addLayout(toolbar)
+
         group.setLayout(console_layout)
         layout.addWidget(group)
 
@@ -269,6 +278,21 @@ class AugmentTab(QWidget):
     def clear_logs(self):
         """清空日志"""
         self.log_console.clear()
+
+    def copy_logs(self):
+        """把日志控制台里所有内容复制到系统剪贴板"""
+        text = self.log_console.toPlainText()
+        if not text:
+            self.copy_logs_btn.setText("⚠️ 日志为空")
+            QTimer.singleShot(1500, lambda: self.copy_logs_btn.setText("📋 复制全部日志"))
+            return
+
+        QApplication.clipboard().setText(text)
+
+        # 短暂反馈：把按钮文字改成"已复制"，1.5 秒后恢复
+        line_count = text.count("\n") + 1
+        self.copy_logs_btn.setText(f"✅ 已复制 ({line_count} 行)")
+        QTimer.singleShot(1500, lambda: self.copy_logs_btn.setText("📋 复制全部日志"))
 
     def start_register(self):
         """开始注册"""
