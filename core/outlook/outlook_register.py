@@ -23,7 +23,8 @@ logger = get_logger(__name__)
 class OutlookRegistration:
     """Outlook 邮箱自动注册类"""
 
-    def __init__(self, progress_callback=None, confirm_callback=None, confirm_success_callback=None):
+    def __init__(self, progress_callback=None, confirm_callback=None, confirm_success_callback=None,
+                 driver=None):
         """
         初始化浏览器（使用 undetected-chromedriver 绕过反检测）
 
@@ -31,16 +32,22 @@ class OutlookRegistration:
             progress_callback: 进度回调函数，用于UI更新
             confirm_callback: 确认回调函数，用于需要用户确认的操作（如验证码完成）
             confirm_success_callback: 确认注册成功回调函数，返回True表示成功，False表示失败
+            driver: 可选，预先创建好的 selenium driver；不传则内部用 create_stealth_browser 创建。
+                外部传入的 driver 必须已经配好代理（如果需要）。
         """
         self.progress_callback = progress_callback
         self.confirm_callback = confirm_callback
         self.confirm_success_callback = confirm_success_callback
-        self.driver = None
+        self.driver = driver
         self.wait = None
         self.user_info = {}  # 存储用户信息
 
-        # 初始化浏览器
-        self._init_browser()
+        # 初始化浏览器：未传 driver 时按老逻辑自己创建
+        if self.driver is None:
+            self._init_browser()
+        else:
+            self._update_progress("✅ 使用外部传入的浏览器（已配置代理/链式代理）")
+            self.wait = WebDriverWait(self.driver, Settings.DEFAULT_TIMEOUT)
 
     def _init_browser(self):
         """初始化浏览器 - 使用完整的指纹伪装配置"""
@@ -983,22 +990,36 @@ class OutlookRegistration:
             return False
 
     def close(self, force=False):
-        """关闭浏览器"""
+        """关闭浏览器，并清理挂在 driver 上的链式代理 server（如有）"""
         if not force:
             print("\n👋 准备关闭浏览器...")
             time.sleep(1)
+
+        # 先把链式中转 server 引用拿出来，等浏览器关掉后再 stop
+        chain_server = getattr(self.driver, "_chained_proxy_server", None) if self.driver else None
+
         try:
-            # 检查浏览器是否还在运行
             try:
                 _ = self.driver.current_url
                 # 如果能获取 URL，说明浏览器还在
                 self.driver.quit()
                 print("✅ 浏览器已关闭")
-            except:
-                # 浏览器已经关闭
+            except Exception:
                 print("✅ 浏览器已关闭（或已被手动关闭）")
         except Exception as e:
             print(f"⚠️ 关闭浏览器时出错: {e}")
+
+        # 释放本地链式中转端口
+        if chain_server is not None:
+            try:
+                chain_server.stop()
+                print("🔗 链式代理中转已停止")
+            except Exception as e:
+                print(f"⚠️ 停止链式代理中转出错: {e}")
+            try:
+                setattr(self.driver, "_chained_proxy_server", None)
+            except Exception:
+                pass
 
 
 def main():

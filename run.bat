@@ -34,8 +34,8 @@ if not exist "%VENV_PY%" (
     )
 )
 
-REM 2. 检查依赖（PyQt6 作为标志）
-"%VENV_PY%" -c "import PyQt6" >nul 2>&1
+REM 2. 检查依赖（fastapi 作为标志：新版 web 控制台必装）
+"%VENV_PY%" -c "import fastapi, uvicorn, PyQt6" >nul 2>&1
 if errorlevel 1 (
     echo [INFO] 缺少依赖，正在安装到 .venv ...
     "%VENV_PY%" -m pip install -r "%PROJECT_DIR%requirements.txt" --disable-pip-version-check
@@ -46,9 +46,10 @@ if errorlevel 1 (
     )
 )
 
-REM 3. 启动应用
-echo [INFO] 启动应用...
-"%VENV_PY%" "%PROJECT_DIR%main.py"
+REM 3. 启动应用（默认 Web 模式：浏览器访问 http://127.0.0.1:28942）
+REM    若需旧版 PyQt 桌面 GUI，改成：%VENV_PY% main.py --gui
+echo [INFO] 启动应用（默认 Web 模式，浏览器会自动打开）...
+"%VENV_PY%" "%PROJECT_DIR%main.py" %*
 
 echo.
 echo 应用已关闭

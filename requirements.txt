@@ -2,7 +2,11 @@
 selenium>=4.0.0
 undetected-chromedriver>=3.5.0
 
-# UI框架
+# Web 控制台（默认入口）
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+
+# UI框架（兜底，--gui 模式使用）
 PyQt6>=6.6.0
 PyQt6-Qt6>=6.6.0
 

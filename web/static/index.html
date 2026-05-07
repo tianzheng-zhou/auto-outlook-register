@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>Outlook 注册控制台</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📧</text></svg>" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            mono: ['ui-monospace', 'SF Mono', 'Consolas', 'Menlo', 'monospace'],
+          },
+        },
+      },
+    };
+  </script>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="bg-slate-50 text-slate-900 h-screen overflow-hidden">
+
+  <div class="flex h-full">
+
+    <!-- ========== 左侧 Sidebar ========== -->
+    <aside class="w-56 shrink-0 bg-slate-900 text-slate-100 flex flex-col">
+      <div class="px-4 py-4 border-b border-slate-800">
+        <h1 class="text-base font-semibold flex items-center gap-2">
+          <span class="text-2xl">📧</span>
+          <span>Outlook 控制台</span>
+        </h1>
+        <p class="text-xs text-slate-400 mt-1">v1.0.0 · Web</p>
+      </div>
+
+      <nav class="flex-1 px-2 py-3 space-y-1" id="nav">
+        <button data-page="register" class="nav-btn active">🚀 自动注册</button>
+        <button data-page="proxy"    class="nav-btn">🌐 代理配置</button>
+        <button data-page="accounts" class="nav-btn">📋 账号管理</button>
+        <button data-page="monitor"  class="nav-btn">📬 邮件监听</button>
+        <button data-page="data"     class="nav-btn">🗂️ 数据管理</button>
+      </nav>
+
+      <div class="px-3 py-3 border-t border-slate-800 text-xs text-slate-400 space-y-1">
+        <div class="flex items-center justify-between">
+          <span>状态</span>
+          <span id="status-badge" class="badge bg-slate-700">等待</span>
+        </div>
+        <div class="flex items-center justify-between">
+          <span>代理池</span>
+          <span id="proxy-pool-count" class="text-slate-200">—</span>
+        </div>
+      </div>
+    </aside>
+
+
+    <!-- ========== 右侧主区 ========== -->
+    <main class="flex-1 min-w-0 flex flex-col overflow-hidden">
+
+      <!-- 顶部 Header -->
+      <header class="bg-white border-b px-6 py-3 flex items-center justify-between">
+        <h2 class="text-base font-semibold text-slate-800" id="page-title">自动注册</h2>
+        <div class="flex items-center gap-3 text-xs">
+          <span id="connection-indicator" class="text-slate-500">🟡 连接中…</span>
+        </div>
+      </header>
+
+      <!-- 内容区 -->
+      <section class="flex-1 overflow-auto p-6" id="page-container">
+
+        <!-- ===== 自动注册 ===== -->
+        <div data-page-content="register">
+
+          <!-- 操作面板 -->
+          <div class="card mb-4">
+            <div class="card-title">操作面板</div>
+            <div class="flex flex-wrap gap-2">
+              <button id="btn-start-register"  class="btn btn-primary">🚀 立即注册</button>
+              <button id="btn-stop-register"   class="btn btn-danger" disabled>⛔ 停止</button>
+              <button id="btn-confirm-action"  class="btn btn-warn"   hidden>✅ 我已完成验证码</button>
+              <button id="btn-close-browser"   class="btn btn-ghost"  hidden>👋 关闭浏览器</button>
+              <button id="btn-refresh-accounts" class="btn btn-ghost">🔄 刷新列表</button>
+            </div>
+            <div id="register-task-info" class="mt-3 text-sm text-slate-600 px-3 py-2 bg-slate-50 rounded" hidden></div>
+          </div>
+
+          <!-- 账号列表 -->
+          <div class="card">
+            <div class="card-title flex items-center justify-between">
+              <span>已注册账号 <span id="accounts-count" class="text-xs text-slate-500 font-normal">(0)</span></span>
+            </div>
+            <div class="overflow-auto" style="max-height: 380px;">
+              <table class="data-table" id="accounts-table">
+                <thead>
+                  <tr>
+                    <th>邮箱</th>
+                    <th>密码</th>
+                    <th>状态</th>
+                    <th>套餐</th>
+                    <th>余额</th>
+                    <th>注册时间</th>
+                    <th class="text-right">操作</th>
+                  </tr>
+                </thead>
+                <tbody id="accounts-tbody">
+                  <tr><td colspan="7" class="text-center text-slate-400 py-4">加载中...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- ===== 代理配置 ===== -->
+        <div data-page-content="proxy" hidden>
+
+          <!-- 上游代理（链式）设置 -->
+          <div class="card mb-4">
+            <div class="card-title flex items-center gap-2">
+              <span>🔗 上游（系统）代理 · 链式代理</span>
+              <span class="text-xs text-slate-400 font-normal">(持久化到 data/proxy_chain.json)</span>
+            </div>
+            <div class="space-y-3">
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" id="chain-enabled" class="accent-blue-500 w-4 h-4" />
+                <span class="text-sm">启用链式代理（浏览器 → 本地中转 → 上游 Clash → 住宅代理 → 目标）</span>
+              </label>
+              <div>
+                <label class="text-xs text-slate-500">上游代理地址（一般填 Clash/V2Ray 的本地 HTTP 端口）</label>
+                <input id="chain-url" class="input mt-1 font-mono" placeholder="http://127.0.0.1:7897" />
+              </div>
+              <div class="flex items-center gap-2">
+                <button id="btn-save-chain" class="btn btn-primary">💾 保存设置</button>
+                <span class="text-xs text-slate-400">
+                  不启用时浏览器直连你粘贴的代理；启用后本程序会自动在本地起一个中转，让流量先走你的 Clash 再走住宅代理。
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 批量粘贴/添加 -->
+          <div class="card mb-4">
+            <div class="card-title">📥 添加新代理</div>
+            <p class="text-xs text-slate-500 mb-2">
+              每行一个，支持 <code>socks5://user:pass@host:port</code> / <code>http://host:port</code> / <code>user:pass@host:port</code> 等各种格式。
+            </p>
+            <textarea id="proxy-text" rows="4" class="input" placeholder="socks5://user:pass@us.example.com:3000&#10;http://user:pass@192.168.1.1:8080&#10;..."></textarea>
+            <div class="mt-2 flex items-center gap-2">
+              <label class="flex items-center gap-1 text-sm text-slate-600">
+                <input type="checkbox" id="proxy-detect" checked class="accent-blue-500" />
+                保存时自动检测 IP / 位置 / 商家
+              </label>
+              <div class="flex-1"></div>
+              <button id="btn-add-proxies" class="btn btn-primary">💾 保存并检测</button>
+            </div>
+          </div>
+
+          <!-- 代理列表 -->
+          <div class="card">
+            <div class="card-title flex items-center justify-between">
+              <span>
+                已保存代理
+                <span id="proxy-list-count" class="text-xs text-slate-500 font-normal">(0)</span>
+                &nbsp;·&nbsp;运行时池
+                <span id="proxy-pool-tag" class="text-xs text-slate-500 font-normal">(0 个)</span>
+              </span>
+              <div class="flex gap-2">
+                <button id="btn-use-all"     class="btn btn-success">🔄 全部加入池（轮换）</button>
+                <button id="btn-clear-pool"  class="btn btn-ghost">🧹 清空运行时池</button>
+                <button id="btn-clear-all"   class="btn btn-danger">🗑️ 清空全部</button>
+              </div>
+            </div>
+            <div class="overflow-auto" style="max-height: 420px;">
+              <table class="data-table" id="proxy-table">
+                <thead>
+                  <tr>
+                    <th>协议</th>
+                    <th>地址</th>
+                    <th>IP</th>
+                    <th>位置</th>
+                    <th>商家 / AS</th>
+                    <th>在池</th>
+                    <th class="text-right">操作</th>
+                  </tr>
+                </thead>
+                <tbody id="proxy-tbody">
+                  <tr><td colspan="7" class="text-center text-slate-400 py-4">加载中...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- ===== 账号管理 ===== -->
+        <div data-page-content="accounts" hidden>
+          <div class="card">
+            <div class="card-title flex items-center justify-between">
+              <span>全部 Augment 账号 <span id="acc-mgr-count" class="text-xs text-slate-500 font-normal">(0)</span></span>
+              <div class="flex items-center gap-2">
+                <select id="acc-mgr-filter" class="input" style="width: 160px;">
+                  <option value="">全部状态</option>
+                  <option value="registered">已注册</option>
+                  <option value="success">成功</option>
+                  <option value="failed">失败</option>
+                  <option value="card_bound">已绑卡</option>
+                </select>
+                <button id="btn-acc-mgr-refresh" class="btn btn-ghost">🔄 刷新</button>
+              </div>
+            </div>
+            <div class="overflow-auto" style="max-height: 520px;">
+              <table class="data-table" id="acc-mgr-table">
+                <thead>
+                  <tr>
+                    <th>邮箱</th>
+                    <th>密码</th>
+                    <th>状态</th>
+                    <th>套餐</th>
+                    <th>余额</th>
+                    <th>绑卡</th>
+                    <th>注册时间</th>
+                    <th>备注</th>
+                    <th class="text-right">操作</th>
+                  </tr>
+                </thead>
+                <tbody id="acc-mgr-tbody">
+                  <tr><td colspan="9" class="text-center text-slate-400 py-4">加载中...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== 邮件监听 ===== -->
+        <div data-page-content="monitor" hidden>
+          <div class="card mb-4">
+            <div class="card-title">📬 监听设置</div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label class="text-xs text-slate-500">邮箱</label>
+                <input id="mon-email" class="input mt-1 font-mono" placeholder="your@outlook.com" />
+              </div>
+              <div>
+                <label class="text-xs text-slate-500">密码</label>
+                <input id="mon-password" type="password" class="input mt-1 font-mono" placeholder="••••••••" />
+              </div>
+              <div>
+                <label class="text-xs text-slate-500">检查间隔（秒）</label>
+                <input id="mon-interval" type="number" min="5" value="30" class="input mt-1" />
+              </div>
+              <div class="flex items-center">
+                <label class="flex items-center gap-2 cursor-pointer mt-5">
+                  <input type="checkbox" id="mon-use-api" class="accent-blue-500 w-4 h-4" />
+                  <span class="text-sm">使用 API 模式（需已登录过并保存 token）</span>
+                </label>
+              </div>
+            </div>
+            <div class="flex items-center gap-2 mt-4">
+              <button id="btn-mon-start" class="btn btn-success">▶️ 开始监听</button>
+              <button id="btn-mon-stop" class="btn btn-danger" disabled>⛔ 停止</button>
+              <span id="mon-status" class="text-xs text-slate-500 ml-2">状态: 空闲</span>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">📨 邮件列表 <span id="mon-email-count" class="text-xs text-slate-500 font-normal">(0)</span></div>
+            <div class="overflow-auto" style="max-height: 420px;">
+              <table class="data-table" id="mon-table">
+                <thead>
+                  <tr>
+                    <th>时间</th>
+                    <th>发件人</th>
+                    <th>主题</th>
+                    <th>预览</th>
+                  </tr>
+                </thead>
+                <tbody id="mon-tbody">
+                  <tr><td colspan="4" class="text-center text-slate-400 py-4">暂无邮件</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== 数据管理 ===== -->
+        <div data-page-content="data" hidden>
+          <div class="card mb-4">
+            <div class="card-title">📥 批量导入邮箱</div>
+            <p class="text-xs text-slate-500 mb-2">每行一个邮箱；也支持 <code>邮箱,密码</code> / <code>邮箱 | 密码</code> 格式（额外字段会忽略）</p>
+            <textarea id="data-import-text" rows="5" class="input" placeholder="user1@outlook.com&#10;user2@outlook.com,password&#10;..."></textarea>
+            <div class="mt-2">
+              <button id="btn-data-import" class="btn btn-primary">💾 导入</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title flex items-center justify-between">
+              <span>邮箱列表 <span id="data-emails-count" class="text-xs text-slate-500 font-normal">(0)</span></span>
+              <div class="flex items-center gap-2">
+                <select id="data-filter" class="input" style="width: 140px;">
+                  <option value="">全部</option>
+                  <option value="unused">未使用</option>
+                  <option value="used">已使用</option>
+                </select>
+                <button id="btn-data-refresh" class="btn btn-ghost">🔄 刷新</button>
+              </div>
+            </div>
+            <div class="overflow-auto" style="max-height: 420px;">
+              <table class="data-table" id="data-table">
+                <thead>
+                  <tr>
+                    <th>邮箱</th>
+                    <th>状态</th>
+                    <th>创建时间</th>
+                    <th>使用时间</th>
+                    <th class="text-right">操作</th>
+                  </tr>
+                </thead>
+                <tbody id="data-tbody">
+                  <tr><td colspan="5" class="text-center text-slate-400 py-4">加载中...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- 底部日志面板 -->
+      <footer class="border-t bg-slate-950 text-slate-100 flex flex-col" style="height: 280px;">
+        <div class="px-3 py-2 flex items-center justify-between text-xs border-b border-slate-800">
+          <div class="flex items-center gap-2">
+            <span class="font-semibold">📋 日志控制台</span>
+            <span id="log-count-tag" class="text-slate-400">0 行</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <button id="btn-copy-logs"  class="px-2 py-1 rounded hover:bg-slate-800">📋 复制全部</button>
+            <button id="btn-clear-logs" class="px-2 py-1 rounded hover:bg-slate-800">🗑️ 清空</button>
+            <label class="flex items-center gap-1 text-slate-400 select-none cursor-pointer">
+              <input type="checkbox" id="toggle-autoscroll" checked class="accent-blue-500" />
+              自动滚动
+            </label>
+          </div>
+        </div>
+        <div id="log-output" class="flex-1 overflow-auto px-3 py-2 font-mono text-xs leading-relaxed"></div>
+      </footer>
+
+    </main>
+  </div>
+
+  <!-- 通用 Toast 容器 -->
+  <div id="toast-container" class="fixed top-4 right-4 z-50 space-y-2"></div>
+
+  <script src="/static/app.js"></script>
+  <script src="/static/register.js"></script>
+  <script src="/static/proxy.js"></script>
+  <script src="/static/pages.js"></script>
+</body>
+</html>

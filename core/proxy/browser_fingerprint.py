@@ -17,6 +17,7 @@ from pathlib import Path
 import undetected_chromedriver as uc
 from typing import Optional
 from utils.logger import logger
+from .proxy_manager import ProxyConfig
 
 # logger = get_logger(__name__)
 
@@ -259,6 +260,12 @@ def create_stealth_browser(chrome_version: Optional[int] = None,
             )
         except Exception as e:
             logger.error(f"❌ 启动链式代理失败，将回退为直连下游代理: {e}")
+            # 如果 server 已经 start()，必须 stop 一下，避免占着本地端口
+            if chained_server is not None:
+                try:
+                    chained_server.stop()
+                except Exception as stop_err:
+                    logger.debug(f"清理已启动但失败的链式 server 出错: {stop_err}")
             chained_server = None
             effective_proxy_for_chrome = proxy
 
