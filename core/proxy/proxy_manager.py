@@ -7,9 +7,7 @@ import random
 import threading
 from typing import Optional, List, Dict
 from dataclasses import dataclass
-from utils.logger import get_logger
-
-logger = get_logger(__name__)
+from utils.logger import logger
 
 
 @dataclass

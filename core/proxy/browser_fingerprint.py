@@ -169,7 +169,8 @@ def create_stealth_browser(chrome_version: Optional[int] = None,
                           headless: bool = False,
                           retry: int = 3,
                           driver_executable_path: Optional[str] = None,
-                          proxy: Optional['ProxyConfig'] = None) -> uc.Chrome:
+                          proxy: Optional['ProxyConfig'] = None,
+                          upstream_proxy: Optional['ProxyConfig'] = None) -> uc.Chrome:
     """
     创建完整伪装指纹的浏览器实例
 
@@ -179,15 +180,44 @@ def create_stealth_browser(chrome_version: Optional[int] = None,
         headless: 是否使用无头模式
         retry: 重试次数，默认3次
         driver_executable_path: 自定义chromedriver路径，通常不需要指定
-        proxy: ProxyConfig对象，用于设置代理
+        proxy: ProxyConfig对象，用于设置代理（最终出口代理，例如海外住宅代理）
+        upstream_proxy: 可选的上游代理（例如本地 Clash），用于实现链式代理
+            链路：浏览器 → 本地中转 → upstream_proxy → proxy → 目标
+            未提供时浏览器直接连 proxy。
 
     Returns:
-        uc.Chrome: 配置好的浏览器驱动实例
+        uc.Chrome: 配置好的浏览器驱动实例。
+            若启用了链式代理，driver 上会挂一个 `_chained_proxy_server` 属性，
+            调用方在关闭浏览器后应调用 `.stop()` 释放本地端口。
 
     Raises:
         Exception: 浏览器启动失败
     """
     logger.info("🔧 开始配置浏览器指纹伪装...")
+
+    # ========== 0. 链式代理：在本地起一个 HTTP CONNECT 中转 ==========
+    chained_server = None
+    effective_proxy_for_chrome = proxy  # 浏览器实际看到的代理（直连或本地中转）
+    if proxy and upstream_proxy:
+        try:
+            from .proxy_chain import ChainedProxyServer
+            chained_server = ChainedProxyServer(upstream=upstream_proxy, downstream=proxy)
+            chained_server.start()
+            # 让 Chrome 连本地中转，由中转去做 上游 → 下游 的链式 CONNECT
+            effective_proxy_for_chrome = ProxyConfig(
+                protocol="http",
+                host="127.0.0.1",
+                port=chained_server.port,
+            )
+            logger.info(
+                f"🔗 已启用链式代理: 浏览器 → {effective_proxy_for_chrome.host}:{effective_proxy_for_chrome.port} "
+                f"→ 上游 {upstream_proxy.host}:{upstream_proxy.port} "
+                f"→ 下游 {proxy.host}:{proxy.port}"
+            )
+        except Exception as e:
+            logger.error(f"❌ 启动链式代理失败，将回退为直连下游代理: {e}")
+            chained_server = None
+            effective_proxy_for_chrome = proxy
 
     installed_chrome_major = _get_installed_chrome_major_version()
     if installed_chrome_major:
@@ -239,9 +269,9 @@ def create_stealth_browser(chrome_version: Optional[int] = None,
         chrome_options.add_argument("--disable-gpu")
 
         # ========== 1.5. 代理配置 ==========
-        if proxy:
-            logger.info(f"🌐 配置代理: {proxy.to_chrome_proxy()}")
-            chrome_options.add_argument(f"--proxy-server={proxy.to_chrome_proxy()}")
+        if effective_proxy_for_chrome:
+            logger.info(f"🌐 配置代理: {effective_proxy_for_chrome.to_chrome_proxy()}")
+            chrome_options.add_argument(f"--proxy-server={effective_proxy_for_chrome.to_chrome_proxy()}")
         else:
             logger.debug("未配置代理，使用本地IP")
             chrome_options.add_argument("--no-proxy-server")  # 禁用系统代理，避免ERR_CONNECTION_CLOSED错误
@@ -329,6 +359,10 @@ def create_stealth_browser(chrome_version: Optional[int] = None,
             # 启动浏览器
             driver = uc.Chrome(**driver_kwargs)
 
+            # 把链式代理 server 挂到 driver 上，方便调用方在关闭浏览器后释放
+            if chained_server is not None:
+                setattr(driver, "_chained_proxy_server", chained_server)
+
             logger.info("✅ 浏览器启动成功")
 
             # ========== 12. 注入JavaScript指纹伪装脚本 ==========
@@ -368,6 +402,12 @@ def create_stealth_browser(chrome_version: Optional[int] = None,
                 logger.info(f"⏳ 等待 {wait_time} 秒后重试...")
                 time.sleep(wait_time)
             else:
+                # 最终失败：清理已启动的链式代理 server
+                if chained_server is not None:
+                    try:
+                        chained_server.stop()
+                    except Exception:
+                        pass
                 logger.error(f"❌ 浏览器启动失败（已重试{retry}次）: {e}", exc_info=True)
                 raise Exception(f"浏览器启动失败（已重试{retry}次）: {e}")
 

@@ -7,7 +7,8 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QPushButton, QLabel, QTableWidget, QTableWidgetItem,
     QTextEdit, QMessageBox, QHeaderView, QGroupBox, QSplitter,
-    QDialog, QPlainTextEdit, QProgressDialog, QRadioButton
+    QDialog, QPlainTextEdit, QProgressDialog, QRadioButton,
+    QCheckBox, QLineEdit
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
 from PyQt6.QtGui import QColor, QIcon
@@ -17,7 +18,11 @@ from database.db_manager import DatabaseManager
 from core.register.register_factory import RegisterFactory
 from core.register.base_register import BaseRegister
 from core.proxy import create_stealth_browser, get_proxy_manager, ProxyDetector
+from core.proxy.proxy_manager import ProxyConfig
 from config.settings import Settings
+from config.proxy_chain_settings import (
+    load_chain_settings, save_chain_settings, DEFAULT_UPSTREAM_URL,
+)
 from utils.logger import logger
 
 
@@ -31,6 +36,7 @@ class RegisterWorker(QThread):
         self.email = email
         self.user_info = user_info
         self.register: Optional[BaseRegister] = None
+        self.driver = None  # 保存 driver 引用，便于在 finally 中清理链式代理 server
         self.is_running = True
 
     def run(self):
@@ -45,19 +51,36 @@ class RegisterWorker(QThread):
             else:
                 self.progress.emit("warning", "⚠️ 未配置代理，使用本地IP")
 
+            # 读取链式代理（上游 / 系统代理）配置
+            upstream_proxy = None
+            if proxy:
+                try:
+                    chain_settings = load_chain_settings()
+                    if chain_settings.get("enabled"):
+                        upstream_url = chain_settings.get("upstream_url") or DEFAULT_UPSTREAM_URL
+                        upstream_proxy = proxy_manager._parse_proxy_string(upstream_url)
+                        self.progress.emit(
+                            "info",
+                            f"🔗 启用链式代理：先走上游 {upstream_proxy.host}:{upstream_proxy.port}",
+                        )
+                except Exception as e:
+                    self.progress.emit("warning", f"⚠️ 解析上游代理失败，将忽略: {e}")
+                    upstream_proxy = None
+
             self.progress.emit("info", "🌐 正在创建浏览器...")
             # 创建浏览器
-            driver = create_stealth_browser(
+            self.driver = create_stealth_browser(
                 chrome_version=Settings.CHROME_VERSION,
                 headless=False,
-                proxy=proxy
+                proxy=proxy,
+                upstream_proxy=upstream_proxy,
             )
 
             self.progress.emit("info", "✅ 浏览器创建成功")
 
             self.progress.emit("info", "🔧 正在创建注册器...")
             # 创建注册器
-            self.register = RegisterFactory.create_register('augment', driver)
+            self.register = RegisterFactory.create_register('augment', self.driver)
 
             # 设置日志回调（接收level和message两个参数）
             self.register.set_log_callback(self.progress.emit)
@@ -77,12 +100,31 @@ class RegisterWorker(QThread):
             logger.error(traceback.format_exc())
             self.progress.emit("error", f"❌ 错误: {str(e)}")
             self.finished.emit(False, str(e))
+        finally:
+            self._cleanup_chain_server()
 
     def stop(self):
         """停止注册"""
         self.is_running = False
         if self.register:
             self.register.stop()
+        self._cleanup_chain_server()
+
+    def _cleanup_chain_server(self):
+        """关闭浏览器后，停掉本地链式代理 server，释放端口"""
+        chain_server = getattr(self.driver, "_chained_proxy_server", None) if self.driver else None
+        if chain_server is None:
+            return
+        try:
+            chain_server.stop()
+        except Exception as e:
+            logger.debug(f"停止链式代理 server 失败: {e}")
+        finally:
+            try:
+                # 防止重复 stop
+                setattr(self.driver, "_chained_proxy_server", None)
+            except Exception:
+                pass
 
 
 class AugmentTab(QWidget):
@@ -351,9 +393,44 @@ class ProxyConfigDialog(QDialog):
     def init_ui(self):
         """初始化UI"""
         self.setWindowTitle("代理配置")
-        self.setGeometry(100, 100, 900, 600)
+        self.setGeometry(100, 100, 900, 680)
 
         layout = QVBoxLayout()
+
+        # ==================== 最上面：上游（系统）代理配置 ====================
+        chain_group = QGroupBox("🔗 上游代理（系统代理 / 链式代理）")
+        chain_layout = QVBoxLayout()
+
+        chain_info = QLabel(
+            "启用后，所有住宅代理会先经过这里设置的上游代理（例如本地 Clash）出墙，再连接住宅代理。\n"
+            "适用场景：本机无法直连海外住宅代理（被墙拦截 / 住宅服务商拒绝国内 IP）。"
+        )
+        chain_info.setStyleSheet("font-size: 10px; color: #666;")
+        chain_info.setWordWrap(True)
+        chain_layout.addWidget(chain_info)
+
+        chain_row = QHBoxLayout()
+
+        self.chain_enabled_cb = QCheckBox("启用链式代理")
+        chain_row.addWidget(self.chain_enabled_cb)
+
+        chain_url_label = QLabel("上游代理:")
+        chain_row.addWidget(chain_url_label)
+
+        self.chain_url_edit = QLineEdit()
+        self.chain_url_edit.setPlaceholderText(f"例如 {DEFAULT_UPSTREAM_URL}")
+        chain_row.addWidget(self.chain_url_edit, stretch=1)
+
+        save_chain_btn = QPushButton("💾 保存上游设置")
+        save_chain_btn.clicked.connect(self.save_chain_only)
+        chain_row.addWidget(save_chain_btn)
+
+        chain_layout.addLayout(chain_row)
+        chain_group.setLayout(chain_layout)
+        layout.addWidget(chain_group)
+
+        # 从配置文件加载初始值
+        self._load_chain_settings_to_ui()
 
         # ==================== 上半部分：已保存的代理列表 ====================
         saved_label = QLabel("📋 已保存的代理列表")
@@ -402,6 +479,15 @@ class ProxyConfigDialog(QDialog):
         use_btn = QPushButton("✅ 使用选中的代理")
         use_btn.clicked.connect(self.use_selected_proxy)
         button_layout.addWidget(use_btn)
+
+        rotate_btn = QPushButton("🔄 全部加入池（轮换模式）")
+        rotate_btn.setToolTip(
+            "把列表里所有代理一次性加到运行时池\n"
+            "每次「立即注册」会自动按顺序轮换下一个 IP\n"
+            "适合批量注册"
+        )
+        rotate_btn.clicked.connect(self.use_all_proxies_for_rotation)
+        button_layout.addWidget(rotate_btn)
 
         clear_btn = QPushButton("🗑️ 清空所有")
         clear_btn.clicked.connect(self.clear_all_proxies)
@@ -732,3 +818,83 @@ class ProxyConfigDialog(QDialog):
         except Exception as e:
             logger.error(f"加载代理失败: {e}")
             QMessageBox.critical(self, "错误", f"加载代理失败: {e}")
+
+    def use_all_proxies_for_rotation(self):
+        """把数据库里所有代理一次性加到运行时池，启用轮换模式"""
+        try:
+            proxies = self.db_manager.get_all_proxies()
+            if not proxies:
+                QMessageBox.warning(self, "提示", "代理列表为空，请先添加代理！")
+                return
+
+            proxy_urls = [p.get('proxy_url', '') for p in proxies if p.get('proxy_url')]
+            if not proxy_urls:
+                QMessageBox.warning(self, "错误", "数据库里没有有效的代理 URL")
+                return
+
+            # 先清空运行时池，再批量加入；ProxyManager.add_proxies_from_list 内部
+            # 解析失败的会 logger.warning 跳过，不影响整体加入
+            self.proxy_manager.clear_proxies()
+            self.proxy_manager.add_proxies_from_list(proxy_urls)
+            actual = self.proxy_manager.get_proxy_count()
+
+            if actual == 0:
+                QMessageBox.critical(
+                    self, "错误",
+                    "所有代理都解析失败，未加入任何条目。请检查代理格式。",
+                )
+                return
+
+            skipped = len(proxy_urls) - actual
+            extra = f"\n（{skipped} 个解析失败已跳过）" if skipped else ""
+            msg = (
+                f"✅ 已把 {actual} 个代理加入运行时池\n\n"
+                f"每次「立即注册」会按顺序轮换下一个 IP\n"
+                f"适合批量注册场景{extra}"
+            )
+            QMessageBox.information(self, "轮换模式已启用", msg)
+            logger.info(f"✅ 已批量加入 {actual} 个代理到运行时池（轮换模式）")
+
+            # 关闭对话框
+            self.accept()
+
+        except Exception as e:
+            logger.error(f"批量加入代理失败: {e}")
+            QMessageBox.critical(self, "错误", f"批量加入代理失败: {e}")
+
+    # ==================== 上游（系统）代理 / 链式代理 ====================
+
+    def _load_chain_settings_to_ui(self):
+        """从配置文件读取链式代理设置并回填到 UI"""
+        try:
+            settings = load_chain_settings()
+            self.chain_enabled_cb.setChecked(bool(settings.get("enabled", False)))
+            self.chain_url_edit.setText(settings.get("upstream_url") or DEFAULT_UPSTREAM_URL)
+        except Exception as e:
+            logger.warning(f"⚠️ 加载链式代理配置失败: {e}")
+
+    def _collect_chain_settings(self) -> tuple:
+        """从 UI 读取链式代理设置，返回 (enabled, upstream_url)"""
+        enabled = self.chain_enabled_cb.isChecked()
+        url = self.chain_url_edit.text().strip() or DEFAULT_UPSTREAM_URL
+        return enabled, url
+
+    def save_chain_only(self):
+        """仅保存上游代理设置（不影响代理列表）"""
+        try:
+            enabled, url = self._collect_chain_settings()
+
+            # 启用时简单校验 URL
+            if enabled:
+                try:
+                    self.proxy_manager._parse_proxy_string(url)
+                except Exception as e:
+                    QMessageBox.warning(self, "上游代理格式错误", f"无法解析: {url}\n\n{e}")
+                    return
+
+            save_chain_settings(enabled, url)
+            state = "已启用" if enabled else "已关闭"
+            QMessageBox.information(self, "保存成功", f"上游代理{state}\n地址: {url}")
+        except Exception as e:
+            logger.error(f"保存上游代理设置失败: {e}")
+            QMessageBox.critical(self, "错误", f"保存上游代理设置失败: {e}")

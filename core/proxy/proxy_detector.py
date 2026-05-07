@@ -9,10 +9,67 @@ except ImportError:
     HAS_HTTPX = False
     import requests
 
+from contextlib import contextmanager
 from typing import Optional, Dict, Tuple
-from utils.logger import get_logger
+from utils.logger import logger
 
-logger = get_logger(__name__)
+
+@contextmanager
+def _maybe_chain_proxy(proxy_url: str, use_upstream: Optional[bool]):
+    """
+    根据链式代理配置，临时把 proxy_url 替换为指向本地中转的 URL。
+
+    yield 出最终用于检测的 proxy_url。退出时关闭临时启动的中转 server。
+
+    Args:
+        proxy_url: 下游（住宅）代理 URL
+        use_upstream:
+            - None：读 chain_settings，按用户配置决定
+            - True：强制启用
+            - False：强制禁用
+    """
+    chain_server = None
+    effective_url = proxy_url
+    try:
+        # 决定是否启用上游
+        upstream_url: Optional[str] = None
+        if use_upstream is False:
+            upstream_url = None
+        else:
+            try:
+                from config.proxy_chain_settings import load_chain_settings
+                settings = load_chain_settings()
+                if (use_upstream is True) or settings.get("enabled"):
+                    upstream_url = settings.get("upstream_url") or None
+            except Exception as e:
+                logger.debug(f"读取链式代理配置失败，按禁用处理: {e}")
+                upstream_url = None
+
+        if upstream_url:
+            try:
+                from .proxy_manager import ProxyManager
+                from .proxy_chain import ChainedProxyServer
+                pm = ProxyManager()
+                up_cfg = pm._parse_proxy_string(upstream_url)
+                down_cfg = pm._parse_proxy_string(proxy_url)
+                chain_server = ChainedProxyServer(upstream=up_cfg, downstream=down_cfg)
+                chain_server.start()
+                effective_url = chain_server.local_url
+                logger.info(
+                    f"🔗 检测时启用链式代理：{effective_url} → 上游 {up_cfg.host}:{up_cfg.port} → 下游 {down_cfg.host}:{down_cfg.port}"
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ 启动链式中转失败，将直连下游代理: {e}")
+                chain_server = None
+                effective_url = proxy_url
+
+        yield effective_url
+    finally:
+        if chain_server is not None:
+            try:
+                chain_server.stop()
+            except Exception:
+                pass
 
 
 class ProxyDetector:
@@ -26,13 +83,19 @@ class ProxyDetector:
     ]
 
     @staticmethod
-    def detect_proxy_info(proxy_url: str, timeout: int = 10) -> Optional[Dict]:
+    def detect_proxy_info(proxy_url: str,
+                          timeout: int = 10,
+                          use_upstream: Optional[bool] = None) -> Optional[Dict]:
         """
         检测代理信息（IP、位置、AS号码、商家等）
 
         Args:
             proxy_url: 代理URL (e.g., "http://host:port" 或 "socks5://host:port")
             timeout: 超时时间（秒）
+            use_upstream:
+                - None（默认）：读全局链式代理配置自动决定
+                - True：强制启用上游链式代理
+                - False：强制不使用上游
 
         Returns:
             {
@@ -49,11 +112,12 @@ class ProxyDetector:
         try:
             logger.info(f"🔍 正在检测代理: {proxy_url[:50]}...")
 
-            # 如果有 httpx，优先使用 httpx（对 SOCKS5 支持更好）
-            if HAS_HTTPX:
-                return ProxyDetector._detect_with_httpx(proxy_url, timeout)
-            else:
-                return ProxyDetector._detect_with_requests(proxy_url, timeout)
+            with _maybe_chain_proxy(proxy_url, use_upstream) as effective_url:
+                # 如果有 httpx，优先使用 httpx（对 SOCKS5 支持更好）
+                if HAS_HTTPX:
+                    return ProxyDetector._detect_with_httpx(effective_url, timeout)
+                else:
+                    return ProxyDetector._detect_with_requests(effective_url, timeout)
 
         except Exception as e:
             logger.error(f"❌ 代理检测失败: {e}")
@@ -70,21 +134,23 @@ class ProxyDetector:
                 # 尝试多个API
                 for api_url in ProxyDetector.APIS:
                     try:
-                        logger.debug(f"尝试API (httpx): {api_url}")
+                        logger.info(f"📡 尝试API (httpx): {api_url}")
                         response = client.get(api_url)
 
                         if response.status_code == 200:
                             data = response.json()
-
-                            # 检查是否是成功的响应
-                            if data.get('status') == 'success' or 'query' in data:
-                                result = ProxyDetector._parse_api_response(data, api_url)
-                                if result and result.get('success'):
-                                    logger.info(f"✅ 检测成功 (httpx): IP={result.get('ip')}, 位置={result.get('location')}")
-                                    return result
+                            # 交给 _parse_api_response 识别各 API 的响应格式（ip-api / ipinfo / ipapi.co）
+                            result = ProxyDetector._parse_api_response(data, api_url)
+                            if result and result.get('success'):
+                                logger.info(f"✅ 检测成功 (httpx): IP={result.get('ip')}, 位置={result.get('location')}")
+                                return result
+                            else:
+                                logger.warning(f"⚠️ {api_url} 返回 200 但响应无法解析: keys={list(data.keys())[:6]}")
+                        else:
+                            logger.warning(f"⚠️ {api_url} 返回状态码: {response.status_code}")
 
                     except Exception as e:
-                        logger.debug(f"⚠️ {api_url} 错误: {e}")
+                        logger.warning(f"⚠️ {api_url} 错误 ({type(e).__name__}): {e}")
                         continue
 
             # 所有API都失败了
@@ -114,7 +180,7 @@ class ProxyDetector:
             # 尝试多个API
             for api_url in ProxyDetector.APIS:
                 try:
-                    logger.debug(f"尝试API (requests): {api_url}")
+                    logger.info(f"📡 尝试API (requests): {api_url}")
                     response = requests.get(
                         api_url,
                         proxies=proxies,
@@ -124,16 +190,18 @@ class ProxyDetector:
 
                     if response.status_code == 200:
                         data = response.json()
-
-                        # 检查是否是成功的响应
-                        if data.get('status') == 'success' or 'query' in data:
-                            result = ProxyDetector._parse_api_response(data, api_url)
-                            if result and result.get('success'):
-                                logger.info(f"✅ 检测成功 (requests): IP={result.get('ip')}, 位置={result.get('location')}")
-                                return result
+                        # 交给 _parse_api_response 识别各 API 的响应格式（ip-api / ipinfo / ipapi.co）
+                        result = ProxyDetector._parse_api_response(data, api_url)
+                        if result and result.get('success'):
+                            logger.info(f"✅ 检测成功 (requests): IP={result.get('ip')}, 位置={result.get('location')}")
+                            return result
+                        else:
+                            logger.warning(f"⚠️ {api_url} 返回 200 但响应无法解析: keys={list(data.keys())[:6]}")
+                    else:
+                        logger.warning(f"⚠️ {api_url} 返回状态码: {response.status_code}")
 
                 except Exception as e:
-                    logger.debug(f"⚠️ {api_url} 错误: {e}")
+                    logger.warning(f"⚠️ {api_url} 错误 ({type(e).__name__}): {e}")
                     continue
 
             # 所有API都失败了
